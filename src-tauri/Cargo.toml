@@ -1,0 +1,30 @@
+[package]
+name = "archive-trail"
+version = "0.1.0"
+description = "内容档案追踪工具"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "archive_trail_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-window-state = "2"
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation"] }
+tauri-plugin-single-instance = "2.4.1"
+base64 = "0.22"
+
+[profile.release]
+panic = "abort"
+codegen-units = 16
+lto = false
+opt-level = "s"
+strip = true
