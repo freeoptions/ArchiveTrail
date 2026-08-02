@@ -17,7 +17,11 @@
               v-for="platform in platforms"
               :key="platform.id"
               class="tab-btn"
-              :class="{ active: currentPlatform?.id === platform.id }"
+              :class="{
+                active: currentPlatform?.id === platform.id,
+                'has-search-matches': isGlobalSearchEnabled && globalPlatformMatchCounts[platform.id] > 0,
+              }"
+              :title="getPlatformTabTitle(platform)"
               @mousedown.prevent
               @click="currentPlatform = platform"
               @dblclick="editPlatformById(platform.id)"
@@ -30,6 +34,13 @@
                 alt=""
               />
               <span>{{ platform.name }}</span>
+              <span
+                v-if="isGlobalSearchEnabled && globalPlatformMatchCounts[platform.id] > 0"
+                class="tab-match-count"
+                aria-label="搜索命中数量"
+              >
+                {{ globalPlatformMatchCounts[platform.id] }}
+              </span>
             </button>
             <button class="tab-btn add-platform" @click="showPlatformModal = true">+</button>
           </div>
@@ -98,7 +109,7 @@
           <div class="meta-search">
             <div class="search-box">
               <span class="search-icon" aria-hidden="true"></span>
-              <input ref="searchInputRef" v-model="activeSearchQuery" type="text" placeholder="搜索记录..." />
+              <input ref="searchInputRef" v-model="activeSearchQuery" type="text" placeholder="搜索记录或输入拼音..." />
               <button v-if="activeSearchQuery" class="search-clear" @click="clearSearch" title="清空">✕</button>
               <label
                 class="global-search-toggle"
@@ -338,6 +349,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { pinyin } from 'pinyin-pro';
 import PlatformModal from './components/PlatformModal.vue';
 import RecordModal from './components/RecordModal.vue';
 import quickerCopyIcon from './assets/icons/quicker-copy.png';
@@ -358,7 +370,9 @@ const platforms = ref<Platform[]>([]);
 const records = ref<AppRecord[]>([]);
 const currentPlatform = ref<Platform | null>(null);
 const isGlobalSearchEnabled = ref(localStorage.getItem(GLOBAL_SEARCH_ENABLED_KEY) === '1');
-const globalSearchQuery = ref(localStorage.getItem(GLOBAL_SEARCH_QUERY_KEY) || '');
+// 全局搜索词只在当前运行期间保留，避免下次启动自动恢复上一次的关键词。
+localStorage.removeItem(GLOBAL_SEARCH_QUERY_KEY);
+const globalSearchQuery = ref('');
 const platformSearchQueries = ref<Record<string, string>>({});
 const debouncedSearchQuery = ref('');
 const selectedSubcategoryIds = ref<string[]>([]);
@@ -461,6 +475,72 @@ const activeSearchQuery = computed({
   },
 });
 
+const pinyinSearchCache = new Map<string, { full: string; initials: string }>();
+
+function getPinyinSearchText(value: string) {
+  const cached = pinyinSearchCache.get(value);
+  if (cached) return cached;
+
+  const searchableText = {
+    full: pinyin(value, {
+      toneType: 'none',
+      v: true,
+      separator: '',
+      nonZh: 'consecutive',
+    }).toLowerCase(),
+    initials: pinyin(value, {
+      pattern: 'initial',
+      toneType: 'none',
+      v: true,
+      type: 'array',
+    }).join('').toLowerCase(),
+  };
+
+  pinyinSearchCache.set(value, searchableText);
+  return searchableText;
+}
+
+function matchesSearchQuery(value: string, query: string) {
+  const normalizedValue = value.toLowerCase();
+  if (normalizedValue.includes(query)) return true;
+
+  // 拼音搜索仅对包含中文的字段启用，英文/数字字段仍按原有规则匹配。
+  if (!/[\u3400-\u9fff]/.test(value) || !/^[a-z0-9\s]+$/i.test(query)) return false;
+
+  const normalizedPinyinQuery = query.replace(/\s+/g, '');
+  if (!normalizedPinyinQuery) return false;
+
+  const searchableText = getPinyinSearchText(value);
+  return searchableText.full.includes(normalizedPinyinQuery)
+    || searchableText.initials.includes(normalizedPinyinQuery);
+}
+
+const globalPlatformMatchCounts = computed<Record<string, number>>(() => {
+  const query = debouncedSearchQuery.value.trim().toLowerCase();
+  if (!isGlobalSearchEnabled.value || !query) return {};
+
+  return platforms.value.reduce<Record<string, number>>((counts, platform) => {
+    const searchableFields = platform.fields.filter(field => field.type !== 'image');
+    counts[platform.id] = records.value.filter(record => {
+      if (record.platformId !== platform.id) return false;
+      return searchableFields.some(field =>
+        matchesSearchQuery(String(getFieldValue(record, field.id)), query)
+      );
+    }).length;
+    return counts;
+  }, {});
+});
+
+function getPlatformTabTitle(platform: Platform) {
+  const query = debouncedSearchQuery.value.trim();
+  if (!isGlobalSearchEnabled.value || !query) return platform.name;
+
+  const count = globalPlatformMatchCounts.value[platform.id] ?? 0;
+  return count > 0
+    ? `${platform.name}：命中 ${count} 条记录`
+    : `${platform.name}：无匹配记录`;
+}
+
 const filteredRecords = computed(() => {
   let result = records.value;
 
@@ -479,7 +559,7 @@ const filteredRecords = computed(() => {
   if (query) {
     const searchableFields = currentFields.value.filter(field => field.type !== 'image');
     result = result.filter(record =>
-      searchableFields.some(field => String(getFieldValue(record, field.id)).toLowerCase().includes(query))
+      searchableFields.some(field => matchesSearchQuery(String(getFieldValue(record, field.id)), query))
     );
   }
 
@@ -504,6 +584,14 @@ const displayRecords = computed(() => {
 
 function clearSearch() {
   activeSearchQuery.value = '';
+  if (isGlobalSearchEnabled.value) {
+    clearGlobalSearchQuery();
+  }
+}
+
+function clearGlobalSearchQuery() {
+  globalSearchQuery.value = '';
+  localStorage.removeItem(GLOBAL_SEARCH_QUERY_KEY);
 }
 
 function handleGlobalSearchToggle(event: Event) {
@@ -523,6 +611,7 @@ function handleGlobalSearchToggle(event: Event) {
     ...platformSearchQueries.value,
     [getCurrentPlatformSearchKey()]: currentQuery,
   };
+  clearGlobalSearchQuery();
 }
 
 function toggleFieldSort(fieldId: string) {
@@ -1283,7 +1372,9 @@ watch(isGlobalSearchEnabled, enabled => {
 });
 
 watch(globalSearchQuery, value => {
-  localStorage.setItem(GLOBAL_SEARCH_QUERY_KEY, value);
+  if (!value) {
+    localStorage.removeItem(GLOBAL_SEARCH_QUERY_KEY);
+  }
 });
 
 watch(fontSize, value => {
@@ -1429,6 +1520,37 @@ onBeforeUnmount(() => {
   color: var(--primary-color);
   border-color: var(--primary-color);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.tab-btn.has-search-matches:not(.active) {
+  color: #b45309;
+  border-color: #f59e0b;
+  background: #fffbeb;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.12);
+}
+
+.tab-btn.has-search-matches:not(.active):hover {
+  background: #fef3c7;
+}
+
+.tab-match-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.28rem;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.tab-btn.active .tab-match-count {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--primary-color);
 }
 
 .add-platform {
