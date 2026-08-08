@@ -3,6 +3,7 @@
     <div ref="topPanelRef" class="top-panel">
       <header class="header">
         <div class="header-left">
+          <img src="/icons/archive-trail.png" alt="ArchiveTrail 图标" class="app-brand-icon" />
           <h1>ArchiveTrail</h1>
         </div>
         <div class="header-right">
@@ -1468,6 +1469,22 @@ onBeforeUnmount(() => {
   align-items: center;
   padding: 12px 32px;
   border-bottom: 1px solid var(--border-color);
+}
+
+.header-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.app-brand-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  display: block;
+  object-fit: contain;
+  border-radius: 0.62rem;
 }
 
 .header h1 {

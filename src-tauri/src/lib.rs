@@ -356,6 +356,6 @@ fn toggle_main_window(app: &AppHandle) {
 }
 
 fn create_tray_icon() -> Image<'static> {
-    const TRAY_ICON_RGBA: &[u8] = include_bytes!("../icons/tray-icon.rgba");
+    const TRAY_ICON_RGBA: &[u8] = include_bytes!("../icons/archive-trail-tray.rgba");
     Image::new(TRAY_ICON_RGBA, 32, 32)
 }
