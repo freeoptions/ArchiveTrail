@@ -326,23 +326,25 @@
       </div>
     </div>
 
-    <div v-if="showDeleteConfirm" class="confirm-overlay" @click.self="cancelDeleteRecord">
-      <div class="confirm-dialog">
-        <h3 class="confirm-title">确定要删除这条记录吗？</h3>
-        <p class="confirm-text">删除后将立即从当前平台记录中移除，且无法自动恢复。</p>
-        <div class="confirm-actions">
-          <button type="button" class="btn btn-secondary" @click="cancelDeleteRecord">取消</button>
-          <button
-            ref="deleteConfirmButtonRef"
-            type="button"
-            class="btn btn-danger"
-            @click="confirmDeleteRecord"
-          >
-            确认删除
-          </button>
-        </div>
-      </div>
-    </div>
+    <DialogModal
+      :visible="showDeleteConfirm"
+      title="删除这条记录？"
+      message="删除后将立即从当前平台记录中移除，且无法自动恢复。"
+      tone="danger"
+      :show-cancel="true"
+      confirm-text="确认删除"
+      @cancel="cancelDeleteRecord"
+      @confirm="confirmDeleteRecord"
+    />
+
+    <DialogModal
+      :visible="noticeDialog.visible"
+      :title="noticeDialog.title"
+      :message="noticeDialog.message"
+      :tone="noticeDialog.tone"
+      @cancel="closeNotice"
+      @confirm="closeNotice"
+    />
 
   </div>
 </template>
@@ -353,6 +355,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { pinyin } from 'pinyin-pro';
 import PlatformModal from './components/PlatformModal.vue';
 import RecordModal from './components/RecordModal.vue';
+import DialogModal from './components/DialogModal.vue';
 import quickerCopyIcon from './assets/icons/quicker-copy.png';
 import {
   Database,
@@ -390,7 +393,17 @@ const previewImageUrl = ref('');
 const showImagePreviewModal = ref(false);
 const showDeleteConfirm = ref(false);
 const pendingDeleteRecordId = ref('');
-const deleteConfirmButtonRef = ref<HTMLButtonElement | null>(null);
+const noticeDialog = ref<{
+  visible: boolean;
+  title: string;
+  message: string;
+  tone: 'info' | 'warning' | 'danger' | 'success';
+}>({
+  visible: false,
+  title: '提示',
+  message: '',
+  tone: 'info',
+});
 const dataDirPath = ref('');
 const imageUrlCache = ref<Map<string, string>>(new Map());
 const iconUrlCache = ref<Map<string, string>>(new Map());
@@ -741,8 +754,25 @@ async function openExternalLink(url: string) {
     await invoke('open_url', { url: normalizedUrl });
   } catch (error) {
     console.error('Failed to open URL:', error);
-    alert(`无法打开链接: ${normalizedUrl}`);
+    showNotice(`无法打开链接：${normalizedUrl}`, '链接打开失败', 'danger');
   }
+}
+
+function showNotice(
+  message: string,
+  title = '提示',
+  tone: 'info' | 'warning' | 'danger' | 'success' = 'danger',
+) {
+  noticeDialog.value = {
+    visible: true,
+    title,
+    message,
+    tone,
+  };
+}
+
+function closeNotice() {
+  noticeDialog.value.visible = false;
 }
 
 function normalizeUrl(url: string) {
@@ -996,21 +1026,6 @@ async function confirmDeleteRecord() {
   await db.deleteRecord(pendingDeleteRecordId.value);
   cancelDeleteRecord();
   await loadData();
-}
-
-function handleDeleteConfirmKeydown(event: KeyboardEvent) {
-  if (!showDeleteConfirm.value) return;
-
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    void confirmDeleteRecord();
-    return;
-  }
-
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    cancelDeleteRecord();
-  }
 }
 
 function getNextFavoriteOrder() {
@@ -1397,17 +1412,6 @@ watch(currentPlatform, (platform, previousPlatform) => {
   nextTick(syncTopPanelHeight);
 });
 
-watch(showDeleteConfirm, async visible => {
-  if (visible) {
-    window.addEventListener('keydown', handleDeleteConfirmKeydown);
-    await nextTick();
-    deleteConfirmButtonRef.value?.focus();
-    return;
-  }
-
-  window.removeEventListener('keydown', handleDeleteConfirmKeydown);
-});
-
 onMounted(async () => {
   await getDataDirPath();
   await loadData();
@@ -1434,7 +1438,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   cleanupColumnResize();
   topPanelResizeObserver?.disconnect();
-  window.removeEventListener('keydown', handleDeleteConfirmKeydown);
   if (searchDebounceTimer !== null) {
     window.clearTimeout(searchDebounceTimer);
     searchDebounceTimer = null;
@@ -2223,68 +2226,6 @@ onBeforeUnmount(() => {
 .toast-fade-leave-to {
   opacity: 0;
   transform: translate(-50%, 8px);
-}
-
-.confirm-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1300;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(15, 23, 42, 0.22);
-  backdrop-filter: blur(6px);
-}
-
-.confirm-dialog {
-  width: min(460px, calc(100vw - 32px));
-  padding: 24px 24px 20px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.98) 100%);
-  box-shadow:
-    0 24px 60px rgba(15, 23, 42, 0.18),
-    0 8px 24px rgba(15, 23, 42, 0.08);
-}
-
-.confirm-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: #fff1f2;
-  color: #e11d48;
-  font-size: 0.86rem;
-  font-weight: 700;
-}
-
-.confirm-badge-warning {
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.confirm-title {
-  margin: 0 0 8px;
-  font-size: 1.22rem;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.confirm-text {
-  margin: 0;
-  color: #64748b;
-  font-size: 0.95rem;
-  line-height: 1.7;
-}
-
-.confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 22px;
 }
 
 @media (max-width: 1200px) {

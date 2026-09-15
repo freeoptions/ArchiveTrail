@@ -162,12 +162,22 @@
       </div>
     </div>
   </div>
+
+  <DialogModal
+    :visible="noticeDialog.visible"
+    :title="noticeDialog.title"
+    :message="noticeDialog.message"
+    :tone="noticeDialog.tone"
+    @cancel="closeNotice"
+    @confirm="closeNotice"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import type { Platform, Record as RecordType } from '../utils/database';
+import DialogModal from './DialogModal.vue';
 
 type SubcategorySection = {
   id: string;
@@ -194,6 +204,17 @@ const fieldValues = ref<Record<string, string | number>>({});
 const imageInputs = ref<Record<string, HTMLInputElement | null>>({});
 const dataDirPath = ref('');
 const shouldCloseOnOverlayMouseUp = ref(false);
+const noticeDialog = ref<{
+  visible: boolean;
+  title: string;
+  message: string;
+  tone: 'info' | 'warning' | 'danger' | 'success';
+}>({
+  visible: false,
+  title: '提示',
+  message: '',
+  tone: 'info',
+});
 
 const selectedPlatform = computed(() => {
   return props.platforms.find(platform => platform.id === selectedPlatformId.value);
@@ -260,6 +281,23 @@ function handleOverlayPointerUp() {
   if (!shouldCloseOnOverlayMouseUp.value) return;
   shouldCloseOnOverlayMouseUp.value = false;
   emit('close');
+}
+
+function showNotice(
+  message: string,
+  title = '提示',
+  tone: 'info' | 'warning' | 'danger' | 'success' = 'warning',
+) {
+  noticeDialog.value = {
+    visible: true,
+    title,
+    message,
+    tone,
+  };
+}
+
+function closeNotice() {
+  noticeDialog.value.visible = false;
 }
 
 function isSubcategorySelected(subcategoryId: string) {
@@ -347,7 +385,7 @@ function handleImageChange(event: Event, fieldId: string) {
 function handlePaste(event: ClipboardEvent, fieldId: string) {
   const items = event.clipboardData?.items;
   if (!items) {
-    alert('无法读取剪贴板');
+    showNotice('无法读取剪贴板内容，请重试。', '无法读取图片');
     return;
   }
 
@@ -362,7 +400,7 @@ function handlePaste(event: ClipboardEvent, fieldId: string) {
           fieldValues.value[fieldId] = e.target?.result as string;
         };
         reader.onerror = () => {
-          alert('读取图片失败');
+          showNotice('读取图片失败，请重新复制或选择图片。', '读取图片失败', 'danger');
         };
         reader.readAsDataURL(file);
         break;
@@ -371,7 +409,7 @@ function handlePaste(event: ClipboardEvent, fieldId: string) {
   }
 
   if (!found) {
-    alert('剪贴板中没有图片，请先截图或复制图片');
+    showNotice('剪贴板中没有图片，请先截图或复制图片。', '没有找到图片', 'info');
   }
 }
 
@@ -448,17 +486,17 @@ function onPlatformChange() {
 
 function save() {
   if (!selectedPlatform.value) {
-    alert('请选择平台');
+    showNotice('请先选择一个平台，再保存记录。', '还不能保存');
     return;
   }
 
   if (selectedPlatform.value.fields.length === 0) {
-    alert('该平台暂无字段，请先添加字段');
+    showNotice('该平台暂无字段，请先添加字段。', '还不能保存');
     return;
   }
 
   if (selectedPlatform.value.subcategories.length > 0 && selectedSubcategoryIds.value.length === 0) {
-    alert('请选择标签值');
+    showNotice('请先选择一个标签值，再保存记录。', '还不能保存');
     return;
   }
 
@@ -466,7 +504,7 @@ function save() {
     if (field.required) {
       const value = fieldValues.value[field.id];
       if (value === undefined || value === null || String(value).trim() === '') {
-        alert(`请输入 ${field.name}`);
+        showNotice(`请填写“${field.name}”，再保存记录。`, '还不能保存');
         return;
       }
     }
@@ -511,6 +549,7 @@ function save() {
   max-height: 85vh;
   overflow: hidden;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  font-size: 1rem;
 }
 
 .modal-header {
@@ -523,14 +562,14 @@ function save() {
 }
 
 .modal-header h2 {
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 600;
 }
 
 .close-btn {
   background: none;
   border: none;
-  font-size: 28px;
+  font-size: 1.75rem;
   cursor: pointer;
   color: var(--text-secondary);
   line-height: 1;
@@ -558,7 +597,7 @@ function save() {
   display: block;
   margin-bottom: 10px;
   font-weight: 500;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .required {
@@ -574,12 +613,12 @@ function save() {
 .platform-select select {
   flex: 1;
   padding: 10px 12px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .btn-sm {
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .empty-platform,
@@ -614,7 +653,7 @@ function save() {
 }
 
 .field-label {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
   color: var(--text-color);
   display: flex;
@@ -623,7 +662,7 @@ function save() {
 }
 
 .field-type {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   background: #f1f5f9;
   padding: 2px 8px;
@@ -639,7 +678,7 @@ function save() {
 .field-input textarea {
   width: 100%;
   padding: 10px 12px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .field-input textarea {
@@ -655,7 +694,7 @@ function save() {
 }
 
 .link-icon {
-  font-size: 16px;
+  font-size: 1rem;
   padding: 10px;
   background: #f8fafc;
   border: 1px solid var(--border-color);
@@ -675,7 +714,7 @@ function save() {
   border: none;
   border-radius: 0 6px 6px 0;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.8125rem;
   white-space: nowrap;
 }
 
@@ -719,7 +758,7 @@ function save() {
 .paste-input {
   flex: 1;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   border: 1px dashed var(--border-color);
   border-radius: 6px;
   background: #f8fafc;
@@ -745,7 +784,7 @@ function save() {
 }
 
 .image-placeholder {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   text-align: center;
   padding: 8px;
@@ -776,7 +815,7 @@ function save() {
 }
 
 .tag-field-group-label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-secondary, #6b7280);
   white-space: nowrap;
   font-weight: 500;
@@ -795,7 +834,7 @@ function save() {
   background: white;
   border-radius: 999px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--text-color);
   transition: all 0.2s;
 }
