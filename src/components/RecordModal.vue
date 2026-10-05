@@ -66,7 +66,19 @@
               </label>
 
               <div class="field-input">
-                <template v-if="field.type === 'text'">
+                <template v-if="field.id === usageDurationFields?.durationFieldId">
+                  <div class="calculated-field">
+                    <input
+                      :value="usageDurationText === '-' ? '' : usageDurationText"
+                      type="text"
+                      placeholder="填写开始时间后自动计算"
+                      readonly
+                    />
+                    <span class="calculated-field-badge">自动</span>
+                  </div>
+                </template>
+
+                <template v-else-if="field.type === 'text'">
                   <textarea v-model="fieldValues[field.id]" placeholder="请输入..." rows="2"></textarea>
                 </template>
 
@@ -105,8 +117,7 @@
                       v-model="fieldValues[field.id]"
                       type="date"
                       class="date-input"
-                      @click="openDatePicker($event)"
-                      readonly
+                      :ref="el => dateInputs[field.id] = el as HTMLInputElement"
                     />
                     <span class="date-icon" @click="openDatePickerByIcon(field.id)">📆</span>
                   </div>
@@ -146,6 +157,7 @@
               </div>
             </div>
           </div>
+
         </div>
 
         <div v-else-if="selectedPlatform" class="empty-fields">
@@ -174,9 +186,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import type { Platform, Record as RecordType } from '../utils/database';
+import {
+  calculateUsageDuration,
+  formatUsageDuration,
+  getUsageDurationFieldIds,
+} from '../utils/usageDuration';
 import DialogModal from './DialogModal.vue';
 
 type SubcategorySection = {
@@ -201,9 +218,12 @@ const emit = defineEmits<{
 const selectedPlatformId = ref<string>('');
 const selectedSubcategoryIds = ref<string[]>([]);
 const fieldValues = ref<Record<string, string | number>>({});
+const nowTimestamp = ref(Date.now());
 const imageInputs = ref<Record<string, HTMLInputElement | null>>({});
+const dateInputs = ref<Record<string, HTMLInputElement | null>>({});
 const dataDirPath = ref('');
 const shouldCloseOnOverlayMouseUp = ref(false);
+let usageDurationTimer: number | null = null;
 const noticeDialog = ref<{
   visible: boolean;
   title: string;
@@ -271,6 +291,24 @@ const subcategorySections = computed<SubcategorySection[]>(() => {
 const visibleFields = computed(() => {
   if (!selectedPlatform.value) return [];
   return selectedPlatform.value.fields.filter(field => field.id !== 'tag');
+});
+
+const usageDurationFields = computed(() => getUsageDurationFieldIds(selectedPlatform.value));
+
+const usageDurationResult = computed(() => {
+  const fieldIds = usageDurationFields.value;
+  if (!fieldIds) return null;
+
+  return calculateUsageDuration(
+    fieldValues.value[fieldIds.startFieldId],
+    fieldValues.value[fieldIds.endFieldId],
+    new Date(nowTimestamp.value),
+  );
+});
+
+const usageDurationText = computed(() => {
+  const result = usageDurationResult.value;
+  return result ? formatUsageDuration(result) : '-';
 });
 
 function handleOverlayPointerDown() {
@@ -351,15 +389,15 @@ function openLink(url: string) {
   }
 }
 
-function openDatePicker(event: Event) {
-  const input = event.target as HTMLInputElement;
-  input.showPicker();
-}
+function openDatePickerByIcon(fieldId: string) {
+  const input = dateInputs.value[fieldId];
+  if (!input) return;
 
-function openDatePickerByIcon(_fieldId: string) {
-  const input = document.querySelector('input[type="date"]') as HTMLInputElement | null;
-  if (input) {
+  input.focus();
+  try {
     input.showPicker();
+  } catch {
+    // 部分 WebView 不支持 showPicker，聚焦输入框后仍可使用原生控件。
   }
 }
 
@@ -434,6 +472,16 @@ function getImageUrl(path: string): string {
 
 onMounted(() => {
   void getDataDirPath();
+  usageDurationTimer = window.setInterval(() => {
+    nowTimestamp.value = Date.now();
+  }, 60_000);
+});
+
+onBeforeUnmount(() => {
+  if (usageDurationTimer !== null) {
+    window.clearInterval(usageDurationTimer);
+    usageDurationTimer = null;
+  }
 });
 
 watch([() => props.record, () => props.platforms, () => props.currentPlatform], ([record, platforms, currentPlatform]) => {
@@ -484,6 +532,15 @@ function onPlatformChange() {
   }
 }
 
+function getCurrentFieldValue(fieldId: string): string | number | undefined {
+  if (usageDurationFields.value?.durationFieldId === fieldId) {
+    const result = usageDurationResult.value;
+    return result?.status === 'valid' ? formatUsageDuration(result) : '';
+  }
+
+  return fieldValues.value[fieldId];
+}
+
 function save() {
   if (!selectedPlatform.value) {
     showNotice('请先选择一个平台，再保存记录。', '还不能保存');
@@ -502,7 +559,7 @@ function save() {
 
   for (const field of visibleFields.value) {
     if (field.required) {
-      const value = fieldValues.value[field.id];
+      const value = getCurrentFieldValue(field.id);
       if (value === undefined || value === null || String(value).trim() === '') {
         showNotice(`请填写“${field.name}”，再保存记录。`, '还不能保存');
         return;
@@ -510,12 +567,19 @@ function save() {
     }
   }
 
+  const valuesToSave = { ...fieldValues.value };
+  if (usageDurationFields.value) {
+    const result = usageDurationResult.value;
+    valuesToSave[usageDurationFields.value.durationFieldId] =
+      result?.status === 'valid' ? formatUsageDuration(result) : '';
+  }
+
   const record: RecordType = {
     id: props.record?.id || crypto.randomUUID(),
     platformId: selectedPlatformId.value,
     subcategoryId: undefined,
     subcategoryIds: [...selectedSubcategoryIds.value],
-    values: Object.entries(fieldValues.value).map(([fieldId, value]) => ({
+    values: Object.entries(valuesToSave).map(([fieldId, value]) => ({
       fieldId,
       value: value as string | number,
     })),
@@ -672,6 +736,35 @@ function save() {
 
 .field-input {
   width: 100%;
+}
+
+.calculated-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calculated-field input {
+  flex: 1;
+  color: #0f766e;
+  background: #f0fdfa;
+  border-color: #99f6e4;
+  font-weight: 600;
+}
+
+.calculated-field input::placeholder {
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.calculated-field-badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #ccfbf1;
+  color: #0f766e;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
 .field-input input,

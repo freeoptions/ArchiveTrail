@@ -1,6 +1,6 @@
 ﻿# ArchiveTrail 项目专属规则
 
-通用规则见：`E:\@imFile-Download\AI-Useful-Prompt\通用开发工作规则.md`。
+本项目继承 Codex 已加载的全局 `AGENTS.md`（本机：`C:\Users\freez\.codex\AGENTS.md`）；以下保留项目专属规则。
 
 - 本项目是 Tauri + Vue/TypeScript 的 Windows 桌面应用，前端入口在 `src`，Rust/Tauri 入口在 `src-tauri`。
 - 开发命令：`npm run dev`；前端检查/构建命令：`npm run build`。

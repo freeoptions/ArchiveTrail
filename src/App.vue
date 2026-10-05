@@ -364,6 +364,11 @@ import {
   type Platform,
   type Record as AppRecord,
 } from './utils/database';
+import {
+  calculateUsageDuration,
+  formatUsageDuration,
+  getUsageDurationFieldIds,
+} from './utils/usageDuration';
 
 const db = new Database();
 const GLOBAL_SEARCH_ENABLED_KEY = 'archiveTrail.globalSearch.enabled';
@@ -411,8 +416,10 @@ const activeSortFieldId = ref('');
 const activeSortDirection = ref<'asc' | 'desc'>('asc');
 const columnWidths = ref<ColumnWidthsMap>({});
 const resizingColumnId = ref('');
+const nowTimestamp = ref(Date.now());
 let topPanelResizeObserver: ResizeObserver | null = null;
 let searchDebounceTimer: number | null = null;
+let usageDurationTimer: number | null = null;
 let activeResizeState:
   | {
       platformId: string;
@@ -680,6 +687,14 @@ function getPlatform(platformId: string) {
 }
 
 function getFieldValue(record: AppRecord, fieldId: string): string | number {
+  const platform = getPlatform(record.platformId);
+  const durationFieldIds = getUsageDurationFieldIds(platform);
+  if (durationFieldIds?.durationFieldId === fieldId) {
+    const startValue = record.values.find(value => value.fieldId === durationFieldIds.startFieldId)?.value;
+    const endValue = record.values.find(value => value.fieldId === durationFieldIds.endFieldId)?.value;
+    return formatUsageDuration(calculateUsageDuration(startValue, endValue, new Date(nowTimestamp.value)));
+  }
+
   return record.values.find(value => value.fieldId === fieldId)?.value ?? '';
 }
 
@@ -693,17 +708,45 @@ function compareRecords(a: AppRecord, b: AppRecord) {
     return b.updatedAt.getTime() - a.updatedAt.getTime();
   }
 
-  const aValue = getFieldValue(a, field.id);
-  const bValue = getFieldValue(b, field.id);
   const direction = activeSortDirection.value === 'asc' ? 1 : -1;
 
   let result = 0;
-  if (field.type === 'number') {
-    result = Number(aValue || 0) - Number(bValue || 0);
-  } else if (field.type === 'date') {
-    result = new Date(String(aValue || 0)).getTime() - new Date(String(bValue || 0)).getTime();
+  if (field.id === getUsageDurationFieldIds(currentPlatform.value)?.durationFieldId) {
+    const aPlatform = getPlatform(a.platformId);
+    const bPlatform = getPlatform(b.platformId);
+    const aFieldIds = getUsageDurationFieldIds(aPlatform);
+    const bFieldIds = getUsageDurationFieldIds(bPlatform);
+    const aStartValue = aFieldIds
+      ? a.values.find(value => value.fieldId === aFieldIds.startFieldId)?.value
+      : undefined;
+    const aEndValue = aFieldIds
+      ? a.values.find(value => value.fieldId === aFieldIds.endFieldId)?.value
+      : undefined;
+    const bStartValue = bFieldIds
+      ? b.values.find(value => value.fieldId === bFieldIds.startFieldId)?.value
+      : undefined;
+    const bEndValue = bFieldIds
+      ? b.values.find(value => value.fieldId === bFieldIds.endFieldId)?.value
+      : undefined;
+    const aDuration = calculateUsageDuration(aStartValue, aEndValue, new Date(nowTimestamp.value));
+    const bDuration = calculateUsageDuration(bStartValue, bEndValue, new Date(nowTimestamp.value));
+    if (aDuration.status === 'valid' && bDuration.status === 'valid') {
+      result = aDuration.days - bDuration.days;
+    } else if (aDuration.status === 'valid') {
+      result = -1;
+    } else if (bDuration.status === 'valid') {
+      result = 1;
+    }
   } else {
-    result = String(aValue || '').localeCompare(String(bValue || ''), 'zh-CN');
+    const aValue = getFieldValue(a, field.id);
+    const bValue = getFieldValue(b, field.id);
+    if (field.type === 'number') {
+      result = Number(aValue || 0) - Number(bValue || 0);
+    } else if (field.type === 'date') {
+      result = new Date(String(aValue || 0)).getTime() - new Date(String(bValue || 0)).getTime();
+    } else {
+      result = String(aValue || '').localeCompare(String(bValue || ''), 'zh-CN');
+    }
   }
 
   if (result === 0) {
@@ -1413,6 +1456,10 @@ watch(currentPlatform, (platform, previousPlatform) => {
 });
 
 onMounted(async () => {
+  usageDurationTimer = window.setInterval(() => {
+    nowTimestamp.value = Date.now();
+  }, 60_000);
+
   await getDataDirPath();
   await loadData();
   applyZoom();
@@ -1441,6 +1488,10 @@ onBeforeUnmount(() => {
   if (searchDebounceTimer !== null) {
     window.clearTimeout(searchDebounceTimer);
     searchDebounceTimer = null;
+  }
+  if (usageDurationTimer !== null) {
+    window.clearInterval(usageDurationTimer);
+    usageDurationTimer = null;
   }
 });
 </script>
