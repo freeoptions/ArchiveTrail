@@ -112,7 +112,10 @@ export function formatUsageDuration(result: UsageDurationResult): string {
       return '日期格式有误';
     case 'invalid-range':
       return '结束时间早于开始时间';
-    case 'valid':
-      return `${result.days} 天${result.ongoing ? '（进行中）' : ''}`;
+    case 'valid': {
+      // 按 365 天折算并截取一位小数，例如 721 天显示约 1.9 年。
+      const years = (Math.floor(result.days * 10 / 365) / 10).toFixed(1);
+      return `${result.days} 天 ≈ ${years}年${result.ongoing ? '（进行中）' : ''}`;
+    }
   }
 }

@@ -153,7 +153,7 @@
                 :class="getFieldColumnClass(field)"
                 :style="getFieldColumnStyle(field)"
               />
-              <col class="col-actions" />
+              <col class="col-actions" :style="{ width: `${actionsColumnWidth}px` }" />
             </colgroup>
 
             <thead>
@@ -166,6 +166,7 @@
                     <span class="th-label">平台</span>
                   </div>
                   <span
+                    v-if="currentFields.length > 0"
                     class="column-resize-handle"
                     title="拖动调整列宽，双击自适应"
                     @mousedown.stop.prevent="startPlatformColumnResize($event)"
@@ -175,7 +176,7 @@
                 <th
                   v-for="field in currentFields"
                   :key="field.id"
-                  :class="[getFieldHeaderClass(field), 'column-resizable', { 'is-resizing': resizingColumnId === field.id }]"
+                  :class="[getFieldHeaderClass(field), { 'column-resizable': canResizeField(field), 'is-resizing': resizingColumnId === field.id }]"
                 >
                   <div class="th-content">
                     <button
@@ -283,12 +284,24 @@
                     >
                       {{ record.favorite ? '🌟' : '☆' }}
                     </button>
-                    <button class="btn-icon btn-delete" @click="deleteRecord(record.id)" title="删除">✕</button>
+                    <button
+                      type="button"
+                      class="btn-icon btn-delete"
+                      @click.stop="deleteRecord(record.id)"
+                      title="删除"
+                      aria-label="删除记录"
+                    >✕</button>
                   </div>
                 </td>
               </tr>
             </tbody>
           </table>
+          <div
+            v-if="resizingColumnId"
+            class="column-resize-guide"
+            :style="{ left: `${resizeGuideLeft}px` }"
+            aria-hidden="true"
+          ></div>
         </template>
 
         <div v-else class="empty-state">
@@ -346,6 +359,20 @@
       @confirm="closeNotice"
     />
 
+    <Transition name="toast-fade">
+      <div v-if="toastMessage" class="toast-message" role="status" aria-live="polite">
+        <span>{{ toastMessage }}</span>
+        <button
+          v-if="undoDeleteState"
+          type="button"
+          class="toast-action"
+          @click="undoDelete"
+        >
+          撤回删除
+        </button>
+      </div>
+    </Transition>
+
   </div>
 </template>
 
@@ -398,6 +425,8 @@ const previewImageUrl = ref('');
 const showImagePreviewModal = ref(false);
 const showDeleteConfirm = ref(false);
 const pendingDeleteRecordId = ref('');
+const toastMessage = ref('');
+const undoDeleteState = ref<{ record: AppRecord; index: number } | null>(null);
 const noticeDialog = ref<{
   visible: boolean;
   title: string;
@@ -416,36 +445,37 @@ const activeSortFieldId = ref('');
 const activeSortDirection = ref<'asc' | 'desc'>('asc');
 const columnWidths = ref<ColumnWidthsMap>({});
 const resizingColumnId = ref('');
+const tableViewportWidth = ref(0);
+let tableResizeObserver: ResizeObserver | null = null;
+type TableColumnLayout = { id: string; width: number; minWidth: number; maxWidth: number };
 const nowTimestamp = ref(Date.now());
 let topPanelResizeObserver: ResizeObserver | null = null;
 let searchDebounceTimer: number | null = null;
 let usageDurationTimer: number | null = null;
+let toastTimer: number | null = null;
+let undoDeleteTimer: number | null = null;
 let activeResizeState:
   | {
       platformId: string;
       columnId: string;
       startX: number;
-      latestClientX: number;
       startWidth: number;
       minWidth: number;
       maxWidth: number;
-      startScrollLeft: number;
+      columns: TableColumnLayout[];
     }
   | null = null;
 let textMeasureContext: CanvasRenderingContext2D | null = null;
-let resizeAutoScrollFrame: number | null = null;
-let resizeAutoScrollDirection = 0;
-let resizeAutoScrollStep = 0;
 
 const MIN_COLUMN_WIDTHS: Record<Field['type'], number> = {
-  text: 72,
-  link: 120,
-  number: 72,
-  date: 96,
-  image: 88,
+  text: 128,
+  link: 160,
+  number: 112,
+  date: 160,
+  image: 112,
 };
 const DEFAULT_PLATFORM_COLUMN_WIDTH = 136;
-const MIN_PLATFORM_COLUMN_WIDTH = 96;
+const MIN_PLATFORM_COLUMN_WIDTH = 112;
 const MAX_PLATFORM_COLUMN_WIDTH = 2400;
 const MAX_COLUMN_WIDTHS: Record<Field['type'], number> = {
   text: 4800,
@@ -461,14 +491,49 @@ function editPlatformById(platformId: string) {
 }
 
 const currentFields = computed(() => currentPlatform.value?.fields ?? []);
+const actionsColumnWidth = computed(() => 192 * Number(fontSize.value) / 13);
+const visibleColumns = computed(() => {
+  const columns: TableColumnLayout[] = [
+    {
+      id: PLATFORM_COLUMN_KEY,
+      width: getSavedPlatformColumnWidth() ?? getDefaultPlatformColumnWidth(),
+      minWidth: getMinPlatformColumnWidth(),
+      maxWidth: MAX_PLATFORM_COLUMN_WIDTH,
+    },
+    ...currentFields.value.map(field => ({
+      id: field.id,
+      width: getSavedColumnWidth(field) ?? getDefaultColumnWidth(field),
+      minWidth: getMinColumnWidth(field),
+      maxWidth: getMaxColumnWidth(field),
+    })),
+  ];
+  const total = columns.reduce((sum, column) => sum + column.width, 0);
+  const minimum = columns.reduce((sum, column) => sum + column.minWidth, 0);
+  const budget = getTableDataWidth(columns);
+  // 历史超宽配置和窗口缩小时也须为每列留出下限，不能仅约束拖拽输入。
+  if (total > budget) {
+    const availableExtra = budget - minimum;
+    const desiredExtra = total - minimum;
+    for (const column of columns) {
+      column.width = column.minWidth + Math.floor((column.width - column.minWidth) * availableExtra / desiredExtra);
+    }
+  }
+  // 末列承接剩余空间并紧邻操作列，不再产生无字段的填充区。
+  columns[columns.length - 1].width += budget - columns.reduce((sum, column) => sum + column.width, 0);
+  return columns;
+});
 
 const tableMinWidth = computed(() => {
-  const platformColumnWidth = getSavedPlatformColumnWidth() ?? DEFAULT_PLATFORM_COLUMN_WIDTH;
-  const actionsColumnWidth = 152;
-  const fieldWidths = currentFields.value.reduce((sum, field) => {
-    return sum + (getSavedColumnWidth(field) ?? getDefaultColumnWidth(field));
-  }, 0);
-  return platformColumnWidth + actionsColumnWidth + fieldWidths;
+  return visibleColumns.value.reduce((sum, column) => sum + column.width, 0) + actionsColumnWidth.value;
+});
+
+const resizeGuideLeft = computed(() => {
+  let left = 0;
+  for (const column of visibleColumns.value) {
+    left += column.width;
+    if (column.id === resizingColumnId.value) break;
+  }
+  return left;
 });
 
 function getCurrentPlatformSearchKey() {
@@ -818,6 +883,25 @@ function closeNotice() {
   noticeDialog.value.visible = false;
 }
 
+function showToast(message: string, duration = 2400) {
+  toastMessage.value = message;
+  if (toastTimer !== null) {
+    window.clearTimeout(toastTimer);
+  }
+  toastTimer = window.setTimeout(() => {
+    toastMessage.value = '';
+    toastTimer = null;
+  }, duration);
+}
+
+function clearUndoDeleteState() {
+  undoDeleteState.value = null;
+  if (undoDeleteTimer !== null) {
+    window.clearTimeout(undoDeleteTimer);
+    undoDeleteTimer = null;
+  }
+}
+
 function normalizeUrl(url: string) {
   const trimmed = url.trim();
   if (!trimmed) return '';
@@ -1045,6 +1129,8 @@ async function saveRecord(record: AppRecord) {
   }
 
   closeRecordModal();
+  clearUndoDeleteState();
+  showToast(exists ? '记录更新成功' : '记录添加成功');
 
   await hydrateAssetUrls();
 
@@ -1065,10 +1151,49 @@ function cancelDeleteRecord() {
 }
 
 async function confirmDeleteRecord() {
-  if (!pendingDeleteRecordId.value) return;
-  await db.deleteRecord(pendingDeleteRecordId.value);
+  const recordId = pendingDeleteRecordId.value;
+  if (!recordId) return;
+
+  clearUndoDeleteState();
+  const deletedIndex = records.value.findIndex(record => record.id === recordId);
+  const deletedRecord = deletedIndex >= 0 ? records.value[deletedIndex] : null;
+
+  await db.deleteRecord(recordId);
   cancelDeleteRecord();
   await loadData();
+
+  if (!deletedRecord) {
+    showToast('记录删除成功');
+    return;
+  }
+
+  undoDeleteState.value = { record: deletedRecord, index: deletedIndex };
+  showToast('记录删除成功', 10_000);
+  undoDeleteTimer = window.setTimeout(() => {
+    undoDeleteState.value = null;
+    undoDeleteTimer = null;
+  }, 10_000);
+}
+
+async function undoDelete() {
+  const pending = undoDeleteState.value;
+  if (!pending) return;
+
+  clearUndoDeleteState();
+
+  const nextRecords = [...records.value];
+  const insertIndex = Math.min(Math.max(pending.index, 0), nextRecords.length);
+  nextRecords.splice(insertIndex, 0, pending.record);
+
+  try {
+    await db.saveRecords(nextRecords);
+    records.value = nextRecords;
+    await loadData();
+    showToast('已撤回删除');
+  } catch (error) {
+    console.error('撤回删除失败:', error);
+    showToast('撤回删除失败');
+  }
 }
 
 function getNextFavoriteOrder() {
@@ -1105,7 +1230,15 @@ function getFieldColumnClass(field: Field) {
 }
 
 function getMinColumnWidth(field: Field) {
-  return MIN_COLUMN_WIDTHS[field.type];
+  return Math.ceil(MIN_COLUMN_WIDTHS[field.type] * Number(fontSize.value) / 13);
+}
+
+function getMinPlatformColumnWidth() {
+  return Math.ceil(MIN_PLATFORM_COLUMN_WIDTH * Number(fontSize.value) / 13);
+}
+
+function getDefaultPlatformColumnWidth() {
+  return Math.max(DEFAULT_PLATFORM_COLUMN_WIDTH, getMinPlatformColumnWidth());
 }
 
 function getMaxColumnWidth(field: Field) {
@@ -1115,12 +1248,12 @@ function getMaxColumnWidth(field: Field) {
 function getDefaultColumnWidth(field: Field) {
   const defaultWidths: Record<Field['type'], number> = {
     text: 180,
-    link: 260,
+    link: 220,
     number: 128,
-    date: 144,
+    date: 160,
     image: 128,
   };
-  return defaultWidths[field.type];
+  return Math.max(defaultWidths[field.type], getMinColumnWidth(field));
 }
 
 function clampColumnWidth(width: number, minWidth: number, maxWidth: number) {
@@ -1141,39 +1274,60 @@ function getSavedPlatformColumnWidth() {
   if (!platformId) return undefined;
   const width = columnWidths.value[platformId]?.[PLATFORM_COLUMN_KEY];
   return typeof width === 'number' && Number.isFinite(width)
-    ? clampColumnWidth(width, MIN_PLATFORM_COLUMN_WIDTH, MAX_PLATFORM_COLUMN_WIDTH)
+    ? clampColumnWidth(width, getMinPlatformColumnWidth(), MAX_PLATFORM_COLUMN_WIDTH)
     : undefined;
 }
 
 function getFieldColumnStyle(field: Field) {
-  const savedWidth = getSavedColumnWidth(field);
-  const width = savedWidth ?? getDefaultColumnWidth(field);
+  const width = visibleColumns.value.find(column => column.id === field.id)?.width ?? getDefaultColumnWidth(field);
   return {
     width: `${width}px`,
   };
 }
 
 function getPlatformColumnStyle() {
-  const width = getSavedPlatformColumnWidth() ?? DEFAULT_PLATFORM_COLUMN_WIDTH;
+  const width = visibleColumns.value[0]?.width ?? getDefaultPlatformColumnWidth();
   return {
     width: `${width}px`,
   };
 }
 
-function setColumnWidth(platformId: string, columnId: string, width: number, minWidth: number, maxWidth: number) {
-  if (!columnWidths.value[platformId]) {
-    columnWidths.value = {
-      ...columnWidths.value,
-      [platformId]: {},
-    };
-  }
+function getTableDataWidth(columns: TableColumnLayout[]) {
+  const minimum = columns.reduce((sum, column) => sum + column.minWidth, 0);
+  return tableViewportWidth.value > 0
+    ? Math.max(minimum, Math.floor(tableViewportWidth.value - actionsColumnWidth.value))
+    : columns.reduce((sum, column) => sum + column.width, 0);
+}
 
-  columnWidths.value[platformId][columnId] = clampColumnWidth(width, minWidth, maxWidth);
+function setColumnWidth(platformId: string, columnId: string, width: number, minWidth: number, maxWidth: number, snapshot = visibleColumns.value) {
+  const columns = snapshot.map(column => ({ ...column }));
+  const index = columns.findIndex(column => column.id === columnId);
+  if (index < 0) return;
+  const budget = getTableDataWidth(columns);
+  const reserved = columns.reduce((sum, column, position) => {
+    return sum + (position < index ? column.width : position > index ? column.minWidth : 0);
+  }, 0);
+  columns[index].width = clampColumnWidth(width, minWidth, Math.max(minWidth, Math.min(maxWidth, budget - reserved)));
+  let excess = columns.reduce((sum, column) => sum + column.width, 0) - budget;
+  // 向右侧列借可缩小的空间；左侧列的位置保持不动。
+  for (let position = index + 1; excess > 0 && position < columns.length; position++) {
+    const reduction = Math.min(excess, columns[position].width - columns[position].minWidth);
+    columns[position].width -= reduction;
+    excess -= reduction;
+  }
+  columns[columns.length - 1].width += budget - columns.reduce((sum, column) => sum + column.width, 0);
+  columnWidths.value = {
+    ...columnWidths.value,
+    [platformId]: {
+      ...columnWidths.value[platformId],
+      ...Object.fromEntries(columns.map(column => [column.id, column.width])),
+    },
+  };
 }
 
 function canResizeField(field: Field) {
   const fieldIndex = currentFields.value.findIndex(item => item.id === field.id);
-  return fieldIndex >= 0;
+  return fieldIndex >= 0 && fieldIndex < currentFields.value.length - 1;
 }
 
 function getTextMeasureContext() {
@@ -1206,7 +1360,7 @@ function autoFitPlatformColumn() {
     .map(record => getPlatform(record.platformId)?.name || '')
     .filter(Boolean);
   const textWidth = getAutoFitTextWidth(['平台', currentPlatform.value?.name || '', ...platformNames]);
-  setColumnWidth(platformId, PLATFORM_COLUMN_KEY, textWidth + 72, MIN_PLATFORM_COLUMN_WIDTH, MAX_PLATFORM_COLUMN_WIDTH);
+  setColumnWidth(platformId, PLATFORM_COLUMN_KEY, textWidth + 72, getMinPlatformColumnWidth(), MAX_PLATFORM_COLUMN_WIDTH);
   void db.saveColumnWidths(columnWidths.value);
 }
 
@@ -1228,80 +1382,59 @@ function autoFitColumn(field: Field) {
   void db.saveColumnWidths(columnWidths.value);
 }
 
-function getRenderedHeaderWidth(headerElement: Element | null, fallbackField: Field) {
-  if (headerElement instanceof HTMLElement && headerElement.offsetWidth > 0) {
-    return headerElement.offsetWidth;
-  }
-
-  return getSavedColumnWidth(fallbackField) ?? getDefaultColumnWidth(fallbackField);
-}
-
-function getRenderedPlatformHeaderWidth(headerElement: Element | null) {
-  if (headerElement instanceof HTMLElement && headerElement.offsetWidth > 0) {
-    return headerElement.offsetWidth;
-  }
-
-  return getSavedPlatformColumnWidth() ?? DEFAULT_PLATFORM_COLUMN_WIDTH;
-}
-
 function startPlatformColumnResize(event: MouseEvent) {
+  if (event.button !== 0 || currentFields.value.length === 0) return;
   const platformId = currentPlatform.value?.id;
   if (!platformId) return;
 
-  const currentHeader = (event.currentTarget as HTMLElement | null)?.closest('th');
   activeResizeState = {
     platformId,
     columnId: PLATFORM_COLUMN_KEY,
     startX: event.clientX,
-    latestClientX: event.clientX,
-    startWidth: getRenderedPlatformHeaderWidth(currentHeader ?? null),
-    minWidth: MIN_PLATFORM_COLUMN_WIDTH,
+    startWidth: visibleColumns.value[0].width,
+    minWidth: getMinPlatformColumnWidth(),
     maxWidth: MAX_PLATFORM_COLUMN_WIDTH,
-    startScrollLeft: tableContainerRef.value?.scrollLeft ?? 0,
+    columns: visibleColumns.value.map(column => ({ ...column })),
   };
   resizingColumnId.value = PLATFORM_COLUMN_KEY;
   document.body.classList.add('column-resizing');
   window.addEventListener('mousemove', handleColumnResizeMove);
   window.addEventListener('mouseup', handleColumnResizeEnd);
+  window.addEventListener('blur', handleColumnResizeEnd);
 }
 
 function startColumnResize(field: Field, event: MouseEvent) {
+  if (event.button !== 0 || !canResizeField(field)) return;
   const platformId = currentPlatform.value?.id;
   const fieldIndex = currentFields.value.findIndex(item => item.id === field.id);
   if (!platformId || fieldIndex < 0) return;
-
-  const currentHeader = (event.currentTarget as HTMLElement | null)?.closest('th');
 
   activeResizeState = {
     platformId,
     columnId: field.id,
     startX: event.clientX,
-    latestClientX: event.clientX,
-    startWidth: getRenderedHeaderWidth(currentHeader ?? null, field),
+    startWidth: visibleColumns.value[fieldIndex + 1].width,
     minWidth: getMinColumnWidth(field),
     maxWidth: getMaxColumnWidth(field),
-    startScrollLeft: tableContainerRef.value?.scrollLeft ?? 0,
+    columns: visibleColumns.value.map(column => ({ ...column })),
   };
   resizingColumnId.value = field.id;
   document.body.classList.add('column-resizing');
   window.addEventListener('mousemove', handleColumnResizeMove);
   window.addEventListener('mouseup', handleColumnResizeEnd);
+  window.addEventListener('blur', handleColumnResizeEnd);
 }
 
 function handleColumnResizeMove(event: MouseEvent) {
   if (!activeResizeState) return;
 
-  activeResizeState.latestClientX = event.clientX;
   applyColumnResizeFromClientX(event.clientX);
-  updateResizeAutoScroll(event.clientX);
 }
 
 function applyColumnResizeFromClientX(clientX: number) {
   if (!activeResizeState) return;
 
-  activeResizeState.latestClientX = clientX;
-  const scrollDelta = (tableContainerRef.value?.scrollLeft ?? activeResizeState.startScrollLeft) - activeResizeState.startScrollLeft;
-  const rawDelta = clientX - activeResizeState.startX + scrollDelta;
+  const rawDelta = clientX - activeResizeState.startX;
   const minDelta = activeResizeState.minWidth - activeResizeState.startWidth;
   const maxDelta = activeResizeState.maxWidth - activeResizeState.startWidth;
   const boundedDelta = Math.min(Math.max(rawDelta, minDelta), maxDelta);
@@ -1312,82 +1445,18 @@ function applyColumnResizeFromClientX(clientX: number) {
     activeResizeState.columnId,
     nextCurrentWidth,
     activeResizeState.minWidth,
-    activeResizeState.maxWidth
+    activeResizeState.maxWidth,
+    activeResizeState.columns
   );
 }
 
-function updateResizeAutoScroll(clientX: number) {
-  const container = tableContainerRef.value;
-  if (!container) {
-    stopResizeAutoScroll();
-    return;
-  }
-
-  const rect = container.getBoundingClientRect();
-  const edgeSize = 80;
-  const maxStep = 34;
-
-  if (clientX > rect.right - edgeSize) {
-    const ratio = Math.min(1, (clientX - (rect.right - edgeSize)) / edgeSize);
-    resizeAutoScrollDirection = 1;
-    resizeAutoScrollStep = Math.ceil(maxStep * ratio);
-    scheduleResizeAutoScroll();
-    return;
-  }
-
-  if (clientX < rect.left + edgeSize) {
-    const ratio = Math.min(1, ((rect.left + edgeSize) - clientX) / edgeSize);
-    resizeAutoScrollDirection = -1;
-    resizeAutoScrollStep = Math.ceil(maxStep * ratio);
-    scheduleResizeAutoScroll();
-    return;
-  }
-
-  stopResizeAutoScroll();
-}
-
-function scheduleResizeAutoScroll() {
-  if (resizeAutoScrollFrame !== null) return;
-  resizeAutoScrollFrame = window.requestAnimationFrame(runResizeAutoScroll);
-}
-
-function runResizeAutoScroll() {
-  resizeAutoScrollFrame = null;
-
-  if (!activeResizeState || resizeAutoScrollDirection === 0 || resizeAutoScrollStep <= 0) return;
-
-  const container = tableContainerRef.value;
-  if (!container) {
-    stopResizeAutoScroll();
-    return;
-  }
-
-  const previousScrollLeft = container.scrollLeft;
-  container.scrollLeft += resizeAutoScrollDirection * resizeAutoScrollStep;
-
-  if (container.scrollLeft !== previousScrollLeft) {
-    applyColumnResizeFromClientX(activeResizeState.latestClientX);
-  }
-
-  scheduleResizeAutoScroll();
-}
-
-function stopResizeAutoScroll() {
-  resizeAutoScrollDirection = 0;
-  resizeAutoScrollStep = 0;
-  if (resizeAutoScrollFrame !== null) {
-    window.cancelAnimationFrame(resizeAutoScrollFrame);
-    resizeAutoScrollFrame = null;
-  }
-}
-
 function cleanupColumnResize() {
-  stopResizeAutoScroll();
   activeResizeState = null;
   resizingColumnId.value = '';
   document.body.classList.remove('column-resizing');
   window.removeEventListener('mousemove', handleColumnResizeMove);
   window.removeEventListener('mouseup', handleColumnResizeEnd);
+  window.removeEventListener('blur', handleColumnResizeEnd);
 }
 
 function handleColumnResizeEnd() {
@@ -1414,6 +1483,22 @@ function syncTopPanelHeight() {
   const height = topPanelRef.value?.offsetHeight ?? 0;
   document.documentElement.style.setProperty('--top-panel-height', `${height}px`);
 }
+
+watch(tableContainerRef, container => {
+  tableResizeObserver?.disconnect();
+  const updateWidth = () => {
+    const width = container?.clientWidth ?? 0;
+    if (width !== tableViewportWidth.value) {
+      handleColumnResizeEnd();
+      tableViewportWidth.value = width;
+    }
+  };
+  updateWidth();
+  if (container && typeof ResizeObserver !== 'undefined') {
+    tableResizeObserver = new ResizeObserver(updateWidth);
+    tableResizeObserver.observe(container);
+  }
+}, { flush: 'post' });
 
 watch(activeSearchQuery, value => {
   if (searchDebounceTimer !== null) {
@@ -1445,6 +1530,7 @@ watch(fontSize, value => {
 watch(currentPlatform, (platform, previousPlatform) => {
   if (platform?.id !== previousPlatform?.id) {
     selectedSubcategoryIds.value = [];
+    handleColumnResizeEnd();
     nextTick(syncTopPanelHeight);
     return;
   }
@@ -1484,6 +1570,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   cleanupColumnResize();
+  tableResizeObserver?.disconnect();
   topPanelResizeObserver?.disconnect();
   if (searchDebounceTimer !== null) {
     window.clearTimeout(searchDebounceTimer);
@@ -1492,6 +1579,14 @@ onBeforeUnmount(() => {
   if (usageDurationTimer !== null) {
     window.clearInterval(usageDurationTimer);
     usageDurationTimer = null;
+  }
+  if (toastTimer !== null) {
+    window.clearTimeout(toastTimer);
+    toastTimer = null;
+  }
+  if (undoDeleteTimer !== null) {
+    window.clearTimeout(undoDeleteTimer);
+    undoDeleteTimer = null;
   }
 });
 </script>
@@ -1856,10 +1951,17 @@ onBeforeUnmount(() => {
 
 .main {
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   padding: calc(var(--top-panel-height, 0px) + 12px) 32px 24px;
 }
 
 .table-container {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  /* 滚动视口不能留横向内边距，否则数据列会从固定操作列右侧露出。 */
+  padding: 16px 0;
   margin-top: 0.8rem;
   background: white;
   border-radius: 1rem;
@@ -1874,8 +1976,20 @@ onBeforeUnmount(() => {
   table-layout: fixed;
 }
 
+.column-resize-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--primary-color);
+  pointer-events: none;
+  z-index: 7;
+}
+
 .record-table th,
 .record-table td {
+  overflow: hidden;
   padding: 1rem;
   border-bottom: 1px solid #f1f5f9;
   font-size: 1rem;
@@ -1965,7 +2079,7 @@ onBeforeUnmount(() => {
 }
 
 .col-actions {
-  width: 9.5rem;
+  width: 12rem;
 }
 
 .platform-cell {
@@ -2058,26 +2172,23 @@ onBeforeUnmount(() => {
 .column-resize-handle {
   position: absolute;
   top: 0;
-  right: -11px;
-  width: 22px;
+  right: 0;
+  width: 12px;
   height: 100%;
   cursor: col-resize;
   touch-action: none;
   user-select: none;
   z-index: 6;
-  border-radius: 6px;
   transition: background-color 0.18s ease;
 }
 
 .column-resize-handle::before {
   content: '';
   position: absolute;
-  top: 16%;
-  bottom: 16%;
-  left: 50%;
+  top: 0;
+  bottom: 0;
+  right: 0;
   width: 2px;
-  transform: translateX(-50%);
-  border-radius: 999px;
   background: transparent;
   transition: background 0.18s ease;
 }
@@ -2087,7 +2198,6 @@ onBeforeUnmount(() => {
   background: rgba(96, 165, 250, 0.08);
 }
 
-.column-resizable:hover .column-resize-handle::before,
 .column-resize-handle:hover::before,
 .column-resizable.is-resizing .column-resize-handle::before {
   background: #60a5fa;
@@ -2141,6 +2251,28 @@ onBeforeUnmount(() => {
 
 .actions-cell {
   white-space: nowrap;
+  min-width: 12rem;
+}
+
+.record-table .th-actions,
+.record-table .actions-cell {
+  position: sticky;
+  right: 0;
+  background: #ffffff;
+  box-shadow: -1px 0 0 #e9eef7;
+}
+
+.record-table .th-actions {
+  z-index: 8;
+  text-align: center;
+}
+
+.record-table .actions-cell {
+  z-index: 8;
+}
+
+.record-table .table-row:hover .actions-cell {
+  background: #f1f5f9;
 }
 
 .action-buttons {
@@ -2153,6 +2285,7 @@ onBeforeUnmount(() => {
 .btn-icon {
   width: 2rem;
   height: 2rem;
+  flex: 0 0 2rem;
   padding: 0;
   border: none;
   background: transparent;
@@ -2261,11 +2394,31 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.9);
   color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
   font-size: 0.95rem;
   line-height: 1.4;
   text-align: center;
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.24);
   backdrop-filter: blur(8px);
+}
+
+.toast-action {
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.toast-action:hover {
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .toast-fade-enter-active,
