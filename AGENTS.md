@@ -9,6 +9,7 @@
 - 项目名与交付映射：`ArchiveTrail -> ArchiveTrail.exe`。
 - 最终 Windows 产物只复制到 `D:\@Software\ArchiveTrail\ArchiveTrail.exe`，不要复制 `target`、`dist` 或其他中间目录。
 - 未经“11”“构建”或“打包”授权，不构建最终 EXE。
+- Windows ICO 替换需由 `src-tauri/build.rs` 的 `cargo:rerun-if-changed=icons/archive-trail.ico` 追踪；已验证仅替换资源可能让增量构建沿用旧 EXE 图标。交付前应只读核对 EXE 内嵌图标与当前 ICO 各帧一致，不能只看源码资源或构建成功。
 
 ## UI 调整经验（已验证）
 

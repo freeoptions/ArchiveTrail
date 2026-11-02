@@ -400,6 +400,7 @@ import {
 const db = new Database();
 const GLOBAL_SEARCH_ENABLED_KEY = 'archiveTrail.globalSearch.enabled';
 const GLOBAL_SEARCH_QUERY_KEY = 'archiveTrail.globalSearch.query';
+const LAST_PLATFORM_ID_KEY = 'archiveTrail.lastPlatformId';
 const PLATFORM_COLUMN_KEY = '__platform__';
 
 const platforms = ref<Platform[]>([]);
@@ -1068,13 +1069,10 @@ async function loadData() {
   records.value = await db.getRecords();
   columnWidths.value = await db.getColumnWidths();
 
-  const previousPlatformId = currentPlatform.value?.id;
-  if (previousPlatformId) {
-    currentPlatform.value = platforms.value.find(platform => platform.id === previousPlatformId) || null;
-  }
-  if (!currentPlatform.value && platforms.value.length > 0) {
-    currentPlatform.value = platforms.value[0];
-  }
+  const previousPlatformId = currentPlatform.value?.id ?? localStorage.getItem(LAST_PLATFORM_ID_KEY);
+  currentPlatform.value = platforms.value.find(platform => platform.id === previousPlatformId)
+    ?? platforms.value[0]
+    ?? null;
 
   await migrateInlineImagesToFiles();
   await hydrateAssetUrls();
@@ -1529,6 +1527,11 @@ watch(fontSize, value => {
 
 watch(currentPlatform, (platform, previousPlatform) => {
   if (platform?.id !== previousPlatform?.id) {
+    if (platform) {
+      localStorage.setItem(LAST_PLATFORM_ID_KEY, platform.id);
+    } else {
+      localStorage.removeItem(LAST_PLATFORM_ID_KEY);
+    }
     selectedSubcategoryIds.value = [];
     handleColumnResizeEnd();
     nextTick(syncTopPanelHeight);
@@ -1633,7 +1636,6 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   display: block;
   object-fit: contain;
-  border-radius: 0.62rem;
 }
 
 .header h1 {
