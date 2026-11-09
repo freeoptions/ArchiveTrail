@@ -1,14 +1,18 @@
 # ArchiveTrail 图标来源与生成
 
-`whiteboard-original.png` 是用户提供的原始素材，保留原始文件字节。
+`wiki-original.png` 是当前使用的用户原始素材，保留原始文件字节。
 来源链接、版权声明及完整 MIT 许可见
-[`../../public/icons/SOURCE-AND-LICENSE.txt`](../../public/icons/SOURCE-AND-LICENSE.txt)。
+[`../../public/icons/WIKI-SOURCE-AND-LICENSE.txt`](../../public/icons/WIKI-SOURCE-AND-LICENSE.txt)。
 该许可文件也随前端公共资源嵌入应用；后续分发应保留完整声明。
+
+上一版 `whiteboard-original.png` 及其
+[`来源与许可`](../../public/icons/SOURCE-AND-LICENSE.txt) 继续保留。
+本次替换前的 PNG、ICO、托盘 RGBA 和说明文件另有项目外精确快照备份。
 
 Windows 资源由 `app-icon-resources` 技能的 `icon_resources.py` 确定性生成：
 
 ```text
-python -B -X utf8 <技能目录>/scripts/icon_resources.py generate assets/branding/whiteboard-original.png --platform windows --output <新的独立输出目录>
+python -B -X utf8 <技能目录>/scripts/icon_resources.py generate assets/branding/wiki-original.png --platform windows --output <新的独立输出目录>
 ```
 
 保持完整原图画布、比例、颜色和透明背景，默认零额外留白，不裁透明边、不重绘、不增加底板或阴影。
